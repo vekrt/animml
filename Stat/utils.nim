@@ -197,6 +197,11 @@ proc argmin*[T: SomeNumber](x: openarray[T]): int =
 
     return find(x, minimum)
 
+proc argmax*[T: SomeNumber](x: openarray[T]): int =
+    let maximum = max(x)
+
+    return find(x, maximum)
+
 proc flatten*[T](x: Tensor[T]): Tensor[T] =
     let nbr_element = x.size.int
 
@@ -207,3 +212,45 @@ proc argmin*[T: SomeNumber](x: Tensor[T]): int =
     let minimum = min(flatten_x)
 
     return find(flatten_x, minimum)
+
+proc argmax*[T: SomeNumber](x: Tensor[T]): int =
+    let flatten_x = flatten(x)
+    let maximum = max(flatten_x)
+
+    return find(flatten_x, maximum)
+
+proc `<`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x < k
+
+    return x.map(check)
+
+proc `<=`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x <= k
+
+    return x.map(check)
+
+proc `>`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x > k
+
+    return x.map(check)
+
+proc `>=`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x >= k
+
+    return x.map(check)
+
+proc `==`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x == k
+
+    return x.map(check)
+
+proc `!=`*[T: SomeFloat](x: Tensor[T]; k: T): Tensor[bool] =
+    proc check(x: float): bool =
+        return x != k
+
+    return x.map(check)
