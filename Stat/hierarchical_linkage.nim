@@ -20,14 +20,22 @@ type
         of Leaf:
             index*: int
 
-proc disp[T: SomeNumber](node: Node[T], level = 0): void =
-    let shift = "\t".repeat(level)
+proc disp[T: SomeNumber](node: Node[T], prefix = ""): string =
+    let split  = " ├── "
+    let leaf   = " └── "
+    let space  = "     "
+    let branch = " |   "
+
     if node.kind == Leaf:
-        echo shift, "Index: ", node.index
+        return "Index: " & $node.index & "\n"
     else:
-        echo shift, "Distance: ", node.distance
-        for c in node.children:
-            disp(c, level + 1)
+        var res = "Distance: " & $node.distance & "\n"
+        let nbr_c = len(node.children)
+        for c in 0..(nbr_c - 2):
+            res = res & prefix & split & disp(node.children[c], prefix & branch)
+        res = res & prefix & leaf & disp(node.children[nbr_c - 1], prefix & space)
+
+        return res
 
 proc pairwise[T: SomeFloat](metric: typedesc[Euclidean]; x,y: Tensor[T]): T =
     let diff = x - y
@@ -81,7 +89,7 @@ proc comparison*[T: SomeNumber](linkage: typedesc[Weighted_linkage]; x: Tensor[T
     return mean(x, axis = axis)
 
 proc HClustering*[T: SomeNumber](linkage: typedesc[Single_linkage or Complete_linkage or Weighted_linkage];
-                                    dist: Tensor[T]): T =
+                                    dist: Tensor[T]): Node[T] =
     var dist_matrix = dist
     var n = dist_matrix.shape[0].int
     var nodes = newSeq[Node[T]](n)
@@ -92,7 +100,6 @@ proc HClustering*[T: SomeNumber](linkage: typedesc[Single_linkage or Complete_li
 
     while n > 1:
         let indices = find_min(dist_matrix)
-        #echo "cluster ", indices
         var children = newSeq[Node[T]](len(indices))
         for i in 0..high(indices):
             children[i] = nodes[indices[i]]
@@ -102,21 +109,19 @@ proc HClustering*[T: SomeNumber](linkage: typedesc[Single_linkage or Complete_li
         let new_cluster = linkage.comparison(dist_matrix[_, indices], axis=1)
         dist_matrix[_, indices[0]] = new_cluster
         dist_matrix[indices[0], _] = transpose(new_cluster)
-        #nodes[indices[0]] = Node[T](distance: dist_matrix[indices[0], indices[1]]/2.0, index: -1, children: nodes[indices])
         var keep_idx = ones[T](n).astype(bool)
         for ii in 1..high(indices):
             keep_idx[indices[ii]] = false
             nodes.delete(indices[ii])
         dist_matrix = dist_matrix.masked_axis_select(keep_idx, axis=0).masked_axis_select(keep_idx, axis=1)
-        #echo dist_matrix.shape
         n = dist_matrix.shape[0].int
 
-    disp(nodes[0])
+    return nodes[0]
 
 
 proc HClustering*[T: SomeNumber](linkage: typedesc[Single_linkage or Complete_linkage or Weighted_linkage];
                                   metric: typedesc[Euclidean];
-                                       X: Tensor[T]): T =
+                                       X: Tensor[T]): Node[T] =
     var dist_matrix = distance_matrix(metric, X)
 
     HClustering(linkage, dist_matrix)
@@ -137,7 +142,7 @@ var dist = [0,17,21,31,23,
             23,21,39,43,0].toTensor().reshape(5,5).astype(float)
 
 echo "Distance matrix"
-discard HClustering(Weighted_linkage, dist)
+echo disp(HClustering(Single_linkage, dist))
 #var a1,a2 : Node[float]
 #var b : Node[float]
 #var b1 : Node[float]

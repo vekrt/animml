@@ -50,10 +50,10 @@ proc variance[T: SomeFloat](x: openarray[T], ddof = 0.0): float =
 
     result = n/(n-ddof) * (sum2 / n - result * result / (n*n))
 
-proc std[T: SomeFloat](x: openarray[T], ddof = 0.0): float =
+proc std*[T: SomeFloat](x: openarray[T], ddof = 0.0): float =
     result = sqrt(variance(x, ddof))
 
-proc mad[T: SomeFloat](x: openarray[T], factor: T = 1.0): T =
+proc mad*[T: SomeFloat](x: openarray[T], factor: T = 1.0): T =
     let med = median(x)
     var dev : seq[T]
     for i in low(x)..high(x):
@@ -156,7 +156,7 @@ proc jarque_bera[T: SomeFloat](x: openarray[T]): Test =
     let jb = N / 6.0 * (S^2 + 0.25*(K - 3)^2)
     result = Test(stat: jb, prob: 1 - exp(-0.5*jb))
 
-proc weighted_mean[T: SomeFloat](x, w: openarray[T]): T =
+proc weighted_mean*[T: SomeFloat](x, w: openarray[T]): T =
     var sum_w = 0.0
     for i in low(w)..high(w):
         sum_w += w[i]
