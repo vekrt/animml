@@ -1,6 +1,7 @@
 import arraymancer
 import utils
 import strutils
+import random
 
 type
     Gini = object
@@ -89,8 +90,6 @@ proc find_split_c[T: SomeFloat](x, y: Tensor[T]; indices: Tensor[int], p_avoid: 
 
     var features_indices : seq[int]
     for i in 0..(p-1):
-        if i == p_avoid:
-            continue
         features_indices.add(i)
 
     for i in features_indices:
@@ -175,6 +174,27 @@ proc load_txt(path: string): Tensor[float] =
 
     return X
 
+type
+    Bsample[T] = object
+        sample: Tensor[T]
+        mask_oob: Tensor[bool]
+
+proc bootstrapping[T: SomeFloat](x: Tensor[T]): Bsample[T] =
+    randomize()
+
+    let n = x.shape[0].int
+    let p = x.shape[1].int
+
+    result.sample = zeros[T](n, p)
+    result.mask_oob = ones[int](n).astype(bool)
+
+    for i in 0..(n-1):
+        let line_idx = random.rand(n-1)
+        result.sample[i, _] = x[line_idx, _]
+        result.mask_oob[line_idx] = false
+
+#proc random_forest_c[T: SomeFloat](x, y: Tensor[T], 
+
 var
     X = load_txt("iris_X.dat")
     y = load_txt("iris_y.dat")
@@ -183,3 +203,6 @@ let res = CART_c(X, y, Entropy)
 
 echo disp(res.tree)
 echo res.nbr_leaf
+
+
+echo bootstrapping(X).mask_oob
