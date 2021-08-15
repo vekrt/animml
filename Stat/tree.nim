@@ -24,11 +24,12 @@ type
             left : B_Node[T]
             right: B_Node[T]
         of Leaf:
-            class: int
+            class: Tensor[int]
 
     Tree*[T] = object
         tree: B_node[T]
         nbr_leaf: int
+        nbr_features: int
 
 proc disp[T](tree: B_Node[T]; prefix = ""): string =
     let split  = " ├── "
@@ -37,7 +38,10 @@ proc disp[T](tree: B_Node[T]; prefix = ""): string =
     let branch = " |   "
 
     if tree.kind == Leaf:
-        return "Class: " & $tree.class & "\n"
+        var class_str = "Class: "
+        for class in tree.class:
+            class_str = class_str & " " & $class
+        return class_str & "\n"
     else:
         let left  = disp(tree.left, prefix & space)
         let right = disp(tree.right, prefix & branch)
@@ -134,7 +138,7 @@ proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Ent
 
     if (n == 1):
         nbr_leaf += 1
-        return B_Node[T](kind: Leaf, class: argmax(count(y)))
+        return B_Node[T](kind: Leaf, class: count(y).astype(int))
 
     var indices = zeros[int](n, p)
     for i in 0..(p-1):
@@ -144,7 +148,7 @@ proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Ent
 
     if res_split.impurity == 0.0:
         nbr_leaf += 1
-        return B_Node[T](kind: Leaf, class: argmax(res_split.count))
+        return B_Node[T](kind: Leaf, class: res_split.count.astype(int))
 
     let idx = indices[_, res_split.feature_idx].flatten()
     let y_left = y[idx][0..res_split.split_at_idx]
@@ -161,6 +165,7 @@ proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Ent
 
 proc CART_c[T: SomeFloat](x, y: Tensor[T]; criterion = Gini): Tree[T] =
     result.tree = build_tree_c(x, y, criterion, result.nbr_leaf)
+    result.nbr_features = x.shape[1].int
 
 proc load_txt(path: string): Tensor[float] =
     var data_X = split(readfile(path), "\n")[0..^2]
@@ -176,25 +181,68 @@ proc load_txt(path: string): Tensor[float] =
 
 type
     Bsample[T] = object
-        sample: Tensor[T]
+        x: Tensor[T]
+        y: Tensor[T]
         mask_oob: Tensor[bool]
 
-proc bootstrapping[T: SomeFloat](x: Tensor[T]): Bsample[T] =
+proc bootstrapping[T: SomeFloat](x, y: Tensor[T]): Bsample[T] =
     randomize()
 
     let n = x.shape[0].int
     let p = x.shape[1].int
 
-    result.sample = zeros[T](n, p)
+    result.x = zeros[T](n, p)
+    result.y = zeros[T](n, 1)
     result.mask_oob = ones[int](n).astype(bool)
 
     for i in 0..(n-1):
         let line_idx = random.rand(n-1)
-        result.sample[i, _] = x[line_idx, _]
+        result.x[i, _] = x[line_idx, _]
+        result.y[i, _] = y[line_idx, _]
         result.mask_oob[line_idx] = false
 
-#proc random_forest_c[T: SomeFloat](x, y: Tensor[T], 
+proc predict_classes[T: SomeFloat](x: Tensor[T], fit: Tree[T]): seq[Tensor[int]] =
+    let n = x.shape[0].int
+    let p = x.shape[1].int
 
+    if p != fit.nbr_features:
+        raise newException(ValueError, "Number of features from the tree and x are different")
+
+    result = newSeq[Tensor[int]](n)
+    let tree = fit.tree
+    for i in 0..(n-1):
+        var next = tree
+        let sample = x[i, _]
+        while next.kind != Leaf:
+            if sample[0, next.value.feature_idx] <= next.value.split_at_value:
+                next = next.left
+            else:
+                next = next.right
+
+        result[i] = next.class
+
+proc predict_proba_c[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[(int, float)] =
+    let classes = predict_classes(x, fit)
+    let n = x.shape[0].int
+    result = newTensor[(int, float)](n)
+    for i in 0..(n-1):
+        result[i] = (argmax(classes[i]), max(classes[i]) / sum(classes[i]))
+
+proc predict_c[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[int] =
+    let n = x.shape[0].int
+    let res = predict_proba_c(x, fit)
+    result = -ones[int](n)
+
+    for i in 0..(n-1):
+        result[i] = res[i][0]
+
+proc random_forest_c[T: SomeFloat](x, y: Tensor[T], N = 100, criterion = Gini, random = false): Tensor[Tree[T]] =
+    result = newTensor[Tree[T]](N)
+
+    for i in 0..N-1:
+        let bs_x = bootstrapping(x, y)
+        result[i] = CART_c(bs_x.x, bs_x.y, criterion)
+    
 var
     X = load_txt("iris_X.dat")
     y = load_txt("iris_y.dat")
@@ -204,5 +252,12 @@ let res = CART_c(X, y, Entropy)
 echo disp(res.tree)
 echo res.nbr_leaf
 
+let y_pred = predict_c(X, res)
+echo y_pred.shape
+echo y.flatten().shape
 
-echo bootstrapping(X).mask_oob
+echo (y_pred ==. y.flatten().astype(int)).astype(int).sum()
+let y_pred_prob = predict_proba_c(X, res)
+echo y_pred_prob
+
+let res_rf = random_forest_c(X, y)
