@@ -2,6 +2,7 @@ import arraymancer
 import utils
 import strutils
 import random
+import tables
 
 type
     Gini = object
@@ -30,6 +31,7 @@ type
         tree: B_node[T]
         nbr_leaf: int
         nbr_features: int
+        nbr_classes: int
 
 proc disp[T](tree: B_Node[T]; prefix = ""): string =
     let split  = " ├── "
@@ -56,7 +58,7 @@ proc count[T: SomeNumber](y: Tensor[T]): Tensor[T] =
     var count = zeros[T](K)
 
     for el in y:
-        count[el.int] += 1.0
+        count[el.int] += 1.0.T
 
     return count
 
@@ -64,7 +66,7 @@ proc count[T: SomeNumber](y: Tensor[T], K: int): Tensor[T] =
     var count = zeros[T](K)
 
     for el in y:
-        count[el.int] += 1.0
+        count[el.int] += 1.0.T
 
     return count
 
@@ -84,7 +86,7 @@ proc impurity[T: SomeFloat](criterion: typedesc[Gini]; y: Tensor[T]): T =
     
     return 1.0 - sum(p *. p)
 
-proc find_split_c[T: SomeFloat](x, y: Tensor[T]; indices: Tensor[int], p_avoid: int, criterion: typedesc[Entropy or Gini]): Split_data[T] =
+proc find_split_c[T: SomeFloat](x, y: Tensor[T]; indices: Tensor[int], criterion: typedesc[Entropy or Gini], random_p = false): Split_data[T] =
     let n = x.shape[0].int
     let p = x.shape[1].int
     var min_idx_p = -1
@@ -95,6 +97,11 @@ proc find_split_c[T: SomeFloat](x, y: Tensor[T]; indices: Tensor[int], p_avoid: 
     var features_indices : seq[int]
     for i in 0..(p-1):
         features_indices.add(i)
+    
+    if random_p:
+        shuffle(features_indices)
+        features_indices = features_indices[0..floor(sqrt(p.float)).int]
+
 
     for i in features_indices:
         let idx = indices[_, i]
@@ -132,9 +139,13 @@ proc find_split_c[T: SomeFloat](x, y: Tensor[T]; indices: Tensor[int], p_avoid: 
     result.N_sample = n
     result.count = count(y)
 
-proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Entropy], nbr_leaf: var int, p_avoid = -1): B_Node[T] =
+proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Entropy], nbr_leaf: var int, max_depth = -1, random_p = false, depth_counter = 0): B_Node[T] =
     let n = x.shape[0].int
     let p = x.shape[1].int
+
+    if depth_counter >= max_depth and max_depth != -1:
+        nbr_leaf += 1
+        return B_Node[T](kind: Leaf, class: count(y).astype(int))
 
     if (n == 1):
         nbr_leaf += 1
@@ -144,7 +155,7 @@ proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Ent
     for i in 0..(p-1):
         indices[_, i] = argsort(x[_, i].flatten()).reshape(n, 1)
 
-    let res_split = find_split_c(x, y, indices, p_avoid, criterion)
+    let res_split = find_split_c(x, y, indices, criterion, random_p = random_p)
 
     if res_split.impurity == 0.0:
         nbr_leaf += 1
@@ -154,18 +165,19 @@ proc build_tree_c[T: SomeFloat](x, y: Tensor[T], criterion: typedesc[Gini or Ent
     let y_left = y[idx][0..res_split.split_at_idx]
     let x_left = x[idx, _][0..res_split.split_at_idx]
 
-    let a = build_tree_c(x_left, y_left, criterion, nbr_leaf, p_avoid = res_split.feature_idx)
+    let a = build_tree_c(x_left, y_left, criterion, nbr_leaf, random_p = random_p, depth_counter = depth_counter + 1, max_depth = max_depth)
 
     let y_right = y[idx][res_split.split_at_idx+1..^1]
     let x_right = x[idx, _][res_split.split_at_idx+1..^1]
 
-    let b = build_tree_c(x_right, y_right, criterion, nbr_leaf, p_avoid = res_split.feature_idx)
+    let b = build_tree_c(x_right, y_right, criterion, nbr_leaf, random_p = random_p, depth_counter = depth_counter + 1, max_depth = max_depth)
 
     return B_Node[T](kind: Branch, left: a, right: b, value: res_split)
 
-proc CART_c[T: SomeFloat](x, y: Tensor[T]; criterion = Gini): Tree[T] =
-    result.tree = build_tree_c(x, y, criterion, result.nbr_leaf)
+proc CART_c[T: SomeFloat](x, y: Tensor[T]; criterion = Gini, max_depth = -1, random_p = false): Tree[T] =
+    result.tree = build_tree_c(x, y, criterion, result.nbr_leaf, max_depth = max_depth, random_p = random_p)
     result.nbr_features = x.shape[1].int
+    result.nbr_classes = count(y).size
 
 proc load_txt(path: string): Tensor[float] =
     var data_X = split(readfile(path), "\n")[0..^2]
@@ -201,14 +213,14 @@ proc bootstrapping[T: SomeFloat](x, y: Tensor[T]): Bsample[T] =
         result.y[i, _] = y[line_idx, _]
         result.mask_oob[line_idx] = false
 
-proc predict_classes[T: SomeFloat](x: Tensor[T], fit: Tree[T]): seq[Tensor[int]] =
+proc predict_classes[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[int] =
     let n = x.shape[0].int
     let p = x.shape[1].int
 
     if p != fit.nbr_features:
         raise newException(ValueError, "Number of features from the tree and x are different")
 
-    result = newSeq[Tensor[int]](n)
+    result = zeros[int](n, fit.nbr_classes)
     let tree = fit.tree
     for i in 0..(n-1):
         var next = tree
@@ -219,14 +231,34 @@ proc predict_classes[T: SomeFloat](x: Tensor[T], fit: Tree[T]): seq[Tensor[int]]
             else:
                 next = next.right
 
-        result[i] = next.class
+        let classes = next.class
+        result[i, 0..(classes.size.int-1)] = classes.reshape(1, classes.size.int)
 
 proc predict_proba_c[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[(int, float)] =
     let classes = predict_classes(x, fit)
     let n = x.shape[0].int
     result = newTensor[(int, float)](n)
     for i in 0..(n-1):
-        result[i] = (argmax(classes[i]), max(classes[i]) / sum(classes[i]))
+        result[i] = (argmax(classes[i, _]), max(classes[i, _]) / sum(classes[i, _]))
+
+type
+    forest[T] = Tensor[Tree[T]]
+    
+proc predict_proba_c[T: SomeFloat](x: Tensor[T], fits: forest[T]): Tensor[float] =
+    let N = fits.shape[0].int
+    let n = x.shape[0].int
+
+    var hard_votes = zeros[int](n, fits[0].nbr_classes)
+    var soft_votes = zeros[float](n, fits[0].nbr_classes)
+    for i in 0..(N-1):
+        let classes = predict_classes(x, fits[i])
+        let class_vote = argmax(classes, 1)
+        let class_proba = classes.astype(float) /. sum(classes, 1).astype(float)
+        soft_votes += class_proba
+        for j in 0..(n-1):
+            hard_votes[j, class_vote[j, 0]] += 1
+
+    return concat(argmax(hard_votes, 1).astype(float), argmax(soft_votes, 1).astype(float), max(soft_votes, 1), axis = 1)
 
 proc predict_c[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[int] =
     let n = x.shape[0].int
@@ -236,18 +268,19 @@ proc predict_c[T: SomeFloat](x: Tensor[T], fit: Tree[T]): Tensor[int] =
     for i in 0..(n-1):
         result[i] = res[i][0]
 
-proc random_forest_c[T: SomeFloat](x, y: Tensor[T], N = 100, criterion = Gini, random = false): Tensor[Tree[T]] =
+proc random_forest_c[T: SomeFloat](x, y: Tensor[T], N = 100, criterion = Gini, max_depth = -1, random = false): forest[T] =
     result = newTensor[Tree[T]](N)
 
     for i in 0..N-1:
         let bs_x = bootstrapping(x, y)
-        result[i] = CART_c(bs_x.x, bs_x.y, criterion)
+        result[i] = CART_c(bs_x.x, bs_x.y, criterion, max_depth = max_depth, random_p = true)
     
 var
     X = load_txt("iris_X.dat")
     y = load_txt("iris_y.dat")
+    depth = 2
 
-let res = CART_c(X, y, Entropy)
+let res = CART_c(X, y, Entropy, max_depth = depth)
 
 echo disp(res.tree)
 echo res.nbr_leaf
@@ -260,4 +293,6 @@ echo (y_pred ==. y.flatten().astype(int)).astype(int).sum()
 let y_pred_prob = predict_proba_c(X, res)
 echo y_pred_prob
 
-let res_rf = random_forest_c(X, y)
+let res_rf = random_forest_c(X, y, max_depth = depth)
+echo predict_proba_c(X, res_rf)
+
